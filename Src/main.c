@@ -83,9 +83,20 @@ static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
 
+static void mountSdCard(void);
+static void createNewFiles(void);
+static void initImu(void);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+//State Variables
+uint8_t progState = 0;
+
+// progState is the current state of the device.
+// progState = 0 on start up.
+// when progState = 0, no data is being recorded and you can access the memory card via USB
+// progState = 1 recording is started and files need to be initialized
+// progState = 2 data is being recorded, USB is not active and the device cannot be charged
 
 //ADC variables for the microphone
 uint32_t adcVal[15000];
@@ -159,75 +170,17 @@ int main(void)
   MX_I2C1_Init();
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
-
-	// mount SD card and create all the necessary files
-	if(f_mount(&myFATFS, myPath, 1) == FR_OK){
-                HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-		HAL_Delay(1000);
-                HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-                HAL_Delay(1000);
-	}else{
-		noMount = 1;
-	}
-	
-	if(f_mount(&myFATFS, accPath, 1) == FR_OK){
-                HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-		HAL_Delay(1000);
-                HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-                HAL_Delay(1000);
-	}else{
-		noMount = 2;
-	}
-	
-	if(f_mount(&myFATFS, gyroPath, 1) == FR_OK){
-                HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-		HAL_Delay(1000);
-                HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-                HAL_Delay(1000);
-	}else{
-		noMount = 3;
-	}
-	
-//	if(f_open(&myFILE, myPath, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK){
-//			HAL_Delay(100);
-//	}
-//	
-//	if(f_open(&accFILE, accPath, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK){
-//			HAL_Delay(100);
-//	}
-//		
-//	if(f_open(&gyroFILE, gyroPath, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK){
-//			HAL_Delay(100);
-//	}
-	
-	// Check if the IMU is connected 
-	if(HAL_I2C_IsDeviceReady(&hi2c1, 0xD6, 2, 10) == HAL_OK){
-			HAL_Delay(100);
-	}else{
-		noMount = 4;
-	}
-	
-	// Setup the LSM6DSL
-	i2cBuf[0] = 0x10; // Write to register 10h
-	i2cBuf[1] = 0x38; // Set the accelerometer sample rate to 52Hz and the range to +/-4g 
-  HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,2,10);
   
-	// For debugging purposes, check if 0x38 was written to register 10h
-	i2cBuf[0] = 0x10;
-	HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,1,10);
-	i2cBuf[1] = 0x00;
-	HAL_I2C_Master_Receive(&hi2c1, 0xD6, &i2cBuf[1],1, 10);
-	
-	i2cBuf[0] = 0x11; // Write to register 11h
-	i2cBuf[1] = 0x30; // Set the gyroscope sample rate to 52Hz and the range to 250 dps
-  HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,2,10);
-		
+  HAL_Delay(100);
 
-	//start timer for the ADC, currently set to 10kHz
-//	HAL_TIM_Base_Start(&htim2);
-//
-//	//Start ADC as DMA
-//	HAL_ADC_Start_DMA(&hadc1, adcVal, 15000);
+  // Mount SD card
+  mountSdCard();
+  
+  // Initialize the IMU
+  initImu();
+
+  //start timer for the ADC, currently set to 10kHz
+  HAL_TIM_Base_Start(&htim2);
 
   /* USER CODE END 2 */
 
@@ -239,125 +192,132 @@ int main(void)
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
-		if (noMount > 0){
-			for (;;){
-				HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-				HAL_Delay(500);
-			}
-		}
+    
+    if (noMount > 0){
+      for (;;){
+        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+        HAL_Delay(500);
+      }
+    }
+    
+    while(progState == 0){
+      // Do nothing until the button is pressed
+    }
+    
+    if(progState == 1){
+      // Create all the Data Files
+      createNewFiles();
+      //Start ADC as DMA
+      HAL_ADC_Start_DMA(&hadc1, adcVal, 15000);
+      HAL_Delay(100);
+      progState = 2;
+    }
                 
-                for (;;){
-                  //Do nothing
-                  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-                  HAL_Delay(2000);
-                  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-                  HAL_Delay(2000);
-                }
 		
-		while (accBufPointer <= 297){
-			
-			// Read from the status register of the IMU to know when new data is ready
-			statBuf[0] = 0x1E;
-			HAL_I2C_Master_Transmit(&hi2c1, 0xD6, statBuf,1,10);
-			statBuf[1] = 0x00;
-			HAL_I2C_Master_Receive(&hi2c1, 0xD6, &statBuf[1],1, 10);
-			
-			statusBit = statBuf[1] & justOne;
-			
-			if (statusBit == 1){
-				statusBit = 0;
-				// Begin reading the acc data from the IMU
-				// Save the acc data to a buffer for writing to SD card
-				i2cBuf[0] = 0x28;
-				HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,1,10);
-				i2cBuf[1] = 0x00;
-				HAL_I2C_Master_Receive(&hi2c1, 0xD6, &i2cBuf[1],6, 10);
-		
-				ax = -(i2cBuf[2]<<8 | i2cBuf[1]);
-				ay = -(i2cBuf[4]<<8 | i2cBuf[3]);
-				az = (i2cBuf[6]<<8 | i2cBuf[5]);
-				
-				accDataBuf1[accBufPointer] = ax/8192.0;
-				accDataBuf1[accBufPointer+1] = ay/8192.0;
-				accDataBuf1[accBufPointer+2] = az/8192.0;
-				
-				// Begin reading the gyro data from the IMU
-				// Save the gyro data to a buffer for writing to SD card
-				gyroBuf[0] = 0x22;
-				HAL_I2C_Master_Transmit(&hi2c1, 0xD6, gyroBuf,1,10);
-				gyroBuf[1] = 0x00;
-				HAL_I2C_Master_Receive(&hi2c1, 0xD6, &gyroBuf[1],6, 10);
-		
-				gx = (gyroBuf[2]<<8 | gyroBuf[1]);
-				gy = (gyroBuf[4]<<8 | gyroBuf[3]);
-				gz = (gyroBuf[6]<<8 | gyroBuf[5]);
-				
-				gyroDataBuf1[accBufPointer] = gx/1.0;
-				gyroDataBuf1[accBufPointer+1] = gy/1.0;
-				gyroDataBuf1[accBufPointer+2] = gz/1.0;
-				
-				accBufPointer = accBufPointer + 3;
-			}
-		}
-		
-		//Set a flag that the first buffer is full before saving to the second buffer
-		accHalfFull = 1;
-		//Reset the buffer pointer to 0
-		accBufPointer = 0;
-		
-		while (accBufPointer <= 297){
-			
-			// Read from the status register of the IMU to know when new data is ready
-			statBuf[0] = 0x1E;
-			HAL_I2C_Master_Transmit(&hi2c1, 0xD6, statBuf,1,10);
-			statBuf[1] = 0x00;
-			HAL_I2C_Master_Receive(&hi2c1, 0xD6, &statBuf[1],1, 10);
-			
-			statusBit = statBuf[1] & justOne;
-			
-			if (statusBit == 1){
-				
-				statusBit = 0;
-				// Begin reading the acc data from the IMU
-				// Save the acc data to a buffer for writing to SD card
-				i2cBuf[0] = 0x28;
-				HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,1,10);
-				i2cBuf[1] = 0x00;
-				HAL_I2C_Master_Receive(&hi2c1, 0xD6, &i2cBuf[1],6, 10);
-		
-				ax = -(i2cBuf[2]<<8 | i2cBuf[1]);
-				ay = -(i2cBuf[4]<<8 | i2cBuf[3]);
-				az = (i2cBuf[6]<<8 | i2cBuf[5]);
-			
-				accDataBuf2[accBufPointer] = ax/8192.0;
-				accDataBuf2[accBufPointer+1] = ay/8192.0;
-				accDataBuf2[accBufPointer+2] = az/8192.0;
-				
-				// Begin reading the gyro data from the IMU
-				// Save the gyro data to a buffer for writing to SD card
-				gyroBuf[0] = 0x22;
-				HAL_I2C_Master_Transmit(&hi2c1, 0xD6, gyroBuf,1,10);
-				gyroBuf[1] = 0x00;
-				HAL_I2C_Master_Receive(&hi2c1, 0xD6, &gyroBuf[1],6, 10);
-		
-				gx = (gyroBuf[2]<<8 | gyroBuf[1]);
-				gy = (gyroBuf[4]<<8 | gyroBuf[3]);
-				gz = (gyroBuf[6]<<8 | gyroBuf[5]);
-				
-				gyroDataBuf2[accBufPointer] = gx/1.0;
-				gyroDataBuf2[accBufPointer+1] = gy/1.0;
-				gyroDataBuf2[accBufPointer+2] = gz/1.0;
-			
-				accBufPointer = accBufPointer + 3;
-			}
-			
-
-		}
-		
-		//Set flag that the second buffer is full
-		accFull = 1;
-		//Reset the buffer pointer to 0 
-		accBufPointer = 0;
+    while (accBufPointer <= 297){
+      
+      // Read from the status register of the IMU to know when new data is ready
+      statBuf[0] = 0x1E;
+      HAL_I2C_Master_Transmit(&hi2c1, 0xD6, statBuf,1,10);
+      statBuf[1] = 0x00;
+      HAL_I2C_Master_Receive(&hi2c1, 0xD6, &statBuf[1],1, 10);
+      
+      statusBit = statBuf[1] & justOne;
+      
+      if (statusBit == 1){
+        statusBit = 0;
+        // Begin reading the acc data from the IMU
+        // Save the acc data to a buffer for writing to SD card
+        i2cBuf[0] = 0x28;
+        HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,1,10);
+        i2cBuf[1] = 0x00;
+        HAL_I2C_Master_Receive(&hi2c1, 0xD6, &i2cBuf[1],6, 10);
+        
+        ax = -(i2cBuf[2]<<8 | i2cBuf[1]);
+        ay = -(i2cBuf[4]<<8 | i2cBuf[3]);
+        az = (i2cBuf[6]<<8 | i2cBuf[5]);
+        
+        accDataBuf1[accBufPointer] = ax/8192.0;
+        accDataBuf1[accBufPointer+1] = ay/8192.0;
+        accDataBuf1[accBufPointer+2] = az/8192.0;
+        
+        // Begin reading the gyro data from the IMU
+        // Save the gyro data to a buffer for writing to SD card
+        gyroBuf[0] = 0x22;
+        HAL_I2C_Master_Transmit(&hi2c1, 0xD6, gyroBuf,1,10);
+        gyroBuf[1] = 0x00;
+        HAL_I2C_Master_Receive(&hi2c1, 0xD6, &gyroBuf[1],6, 10);
+        
+        gx = (gyroBuf[2]<<8 | gyroBuf[1]);
+        gy = (gyroBuf[4]<<8 | gyroBuf[3]);
+        gz = (gyroBuf[6]<<8 | gyroBuf[5]);
+        
+        gyroDataBuf1[accBufPointer] = gx/1.0;
+        gyroDataBuf1[accBufPointer+1] = gy/1.0;
+        gyroDataBuf1[accBufPointer+2] = gz/1.0;
+        
+        accBufPointer = accBufPointer + 3;
+      }
+    }
+    
+    //Set a flag that the first buffer is full before saving to the second buffer
+    accHalfFull = 1;
+    //Reset the buffer pointer to 0
+    accBufPointer = 0;
+    
+    while (accBufPointer <= 297){
+      
+      // Read from the status register of the IMU to know when new data is ready
+      statBuf[0] = 0x1E;
+      HAL_I2C_Master_Transmit(&hi2c1, 0xD6, statBuf,1,10);
+      statBuf[1] = 0x00;
+      HAL_I2C_Master_Receive(&hi2c1, 0xD6, &statBuf[1],1, 10);
+      
+      statusBit = statBuf[1] & justOne;
+      
+      if (statusBit == 1){
+        
+        statusBit = 0;
+        // Begin reading the acc data from the IMU
+        // Save the acc data to a buffer for writing to SD card
+        i2cBuf[0] = 0x28;
+        HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,1,10);
+        i2cBuf[1] = 0x00;
+        HAL_I2C_Master_Receive(&hi2c1, 0xD6, &i2cBuf[1],6, 10);
+        
+        ax = -(i2cBuf[2]<<8 | i2cBuf[1]);
+        ay = -(i2cBuf[4]<<8 | i2cBuf[3]);
+        az = (i2cBuf[6]<<8 | i2cBuf[5]);
+        
+        accDataBuf2[accBufPointer] = ax/8192.0;
+        accDataBuf2[accBufPointer+1] = ay/8192.0;
+        accDataBuf2[accBufPointer+2] = az/8192.0;
+        
+        // Begin reading the gyro data from the IMU
+        // Save the gyro data to a buffer for writing to SD card
+        gyroBuf[0] = 0x22;
+        HAL_I2C_Master_Transmit(&hi2c1, 0xD6, gyroBuf,1,10);
+        gyroBuf[1] = 0x00;
+        HAL_I2C_Master_Receive(&hi2c1, 0xD6, &gyroBuf[1],6, 10);
+        
+        gx = (gyroBuf[2]<<8 | gyroBuf[1]);
+        gy = (gyroBuf[4]<<8 | gyroBuf[3]);
+        gz = (gyroBuf[6]<<8 | gyroBuf[5]);
+        
+        gyroDataBuf2[accBufPointer] = gx/1.0;
+        gyroDataBuf2[accBufPointer+1] = gy/1.0;
+        gyroDataBuf2[accBufPointer+2] = gz/1.0;
+        
+        accBufPointer = accBufPointer + 3;
+      }
+      
+      
+    }
+    
+    //Set flag that the second buffer is full
+    accFull = 1;
+    //Reset the buffer pointer to 0 
+    accBufPointer = 0;
 			
   }
   /* USER CODE END 3 */
@@ -382,7 +342,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 1;
-  RCC_OscInitStruct.PLL.PLLN = 8;
+  RCC_OscInitStruct.PLL.PLLN = 12;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV7;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
   RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
@@ -400,7 +360,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
@@ -499,7 +459,7 @@ static void MX_I2C1_Init(void)
 {
 
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00707CBB;
+  hi2c1.Init.Timing = 0x20303E5D;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -550,7 +510,7 @@ static void MX_TIM2_Init(void)
   TIM_MasterConfigTypeDef sMasterConfig;
 
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 319;
+  htim2.Init.Prescaler = 479;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 10;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -596,8 +556,6 @@ static void MX_DMA_Init(void)
         * Output
         * EVENT_OUT
         * EXTI
-     PA2   ------> USART2_TX
-     PA3   ------> USART2_RX
 */
 static void MX_GPIO_Init(void)
 {
@@ -620,20 +578,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : USART_TX_Pin USART_RX_Pin */
-  GPIO_InitStruct.Pin = USART_TX_Pin|USART_RX_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
   /*Configure GPIO pins : LD2_Pin PA10 */
   GPIO_InitStruct.Pin = LD2_Pin|GPIO_PIN_10;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
 
@@ -665,6 +619,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 	
 	//Check if 8hrs have passed since writting began (8hrs = 21600 writes)
 	if (writeCount == 21600 && noMount == 0){
+                progState = 0;
 		HAL_ADC_Stop_DMA(&hadc1);
 		f_close(&myFILE);
 		f_close(&accFILE);
@@ -672,9 +627,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 		HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 	}
 	
-  /* NOTE : This function should not be modified. When the callback is needed,
-            function HAL_ADC_ConvCpltCallback must be implemented in the user file.
-   */
 }
 
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
@@ -701,12 +653,97 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 		f_sync(&gyroFILE);
 		accFull = 0;
 	}
-		
 	
-  /* NOTE : This function should not be modified. When the callback is needed,
-            function HAL_ADC_ConvHalfCpltCallback must be implemented in the user file.
-  */
 }
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(GPIO_Pin);
+  
+  // Wait for button to be pressed to begin recording data
+  if(progState == 0){
+   progState = 1;
+   HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+  }
+  
+  // Stop recording data and close all the files
+  if(progState == 2){
+    progState = 0;
+    HAL_ADC_Stop_DMA(&hadc1);
+    f_close(&myFILE);
+    f_close(&accFILE);
+    f_close(&gyroFILE);
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+  }
+  
+}
+
+void mountSdCard(){
+  
+  if(f_mount(&myFATFS, myPath, 1) == FR_OK){
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    HAL_Delay(1000);
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    HAL_Delay(1000);
+  }else{
+    noMount = 1;
+  }
+
+  if(f_mount(&myFATFS, accPath, 1) == FR_OK){
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    HAL_Delay(1000);
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    HAL_Delay(1000);
+  }else{
+    noMount = 2;
+  }
+	
+  if(f_mount(&myFATFS, gyroPath, 1) == FR_OK){
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    HAL_Delay(1000);
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    HAL_Delay(1000);
+  }else{
+    noMount = 3;
+  }
+}
+
+void createNewFiles(){
+  
+  //This function will create and open the data files
+  if(f_open(&myFILE, myPath, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK){
+    HAL_Delay(100);
+  }
+	
+  if(f_open(&accFILE, accPath, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK){
+    HAL_Delay(100);
+  }
+		
+  if(f_open(&gyroFILE, gyroPath, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK){
+    HAL_Delay(100);
+  }
+  
+}
+
+void initImu(){
+  
+  i2cBuf[0] = 0x10; // Write to register 10h
+  i2cBuf[1] = 0x38; // Set the accelerometer sample rate to 52Hz and the range to +/-4g 
+  HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,2,10);
+  
+//	// For debugging purposes, check if 0x38 was written to register 10h
+//	i2cBuf[0] = 0x10;
+//	HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,1,10);
+//	i2cBuf[1] = 0x00;
+//	HAL_I2C_Master_Receive(&hi2c1, 0xD6, &i2cBuf[1],1, 10);
+	
+  i2cBuf[0] = 0x11; // Write to register 11h
+  i2cBuf[1] = 0x30; // Set the gyroscope sample rate to 52Hz and the range to 250 dps
+  HAL_I2C_Master_Transmit(&hi2c1, 0xD6, i2cBuf,2,10);
+  
+}
+
 /* USER CODE END 4 */
 
 /**

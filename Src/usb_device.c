@@ -61,7 +61,7 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-
+USBD_StatusTypeDef USBStatus;
 /* USER CODE END PV */
 
 /* USER CODE BEGIN PFP */
